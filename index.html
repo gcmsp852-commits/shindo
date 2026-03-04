@@ -98,8 +98,6 @@
 <script>
     // --- SHA-256関数群 (変更なし) ---
 // --- SHA-256関数群 (変更なし) ---
-// --- SHA-256関数群 (変更なし) ---
-// --- SHA-256関数群 (変更なし) ---
     function sha256Bytes(msgBytes){
         const K = new Uint32Array([0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]);
         function rotr(x,n){ return (x>>>n) | (x<<(32-n)); } function ch(x,y,z){ return (x & y) ^ (~x & z); } function maj(x,y,z){ return (x & y) ^ (x & z) ^ (y & z); } function s0(x){ return rotr(x,7) ^ rotr(x,18) ^ (x>>>3); } function s1(x){ return rotr(x,17) ^ rotr(x,19) ^ (x>>>10); } function S0(x){ return rotr(x,2) ^ rotr(x,13) ^ rotr(x,22); } function S1(x){ return rotr(x,6) ^ rotr(x,11) ^ rotr(x,25); }
@@ -134,7 +132,7 @@
     let appMask = null;
     let savedRawCandidates = [];
 
-    // --- 距離判定・サイズ推定ロジック（修正版） ---
+    // --- 距離判定・サイズ推定ロジック ---
     function dist2(a, b) {
         const dx = a.x - b.x, dy = a.y - b.y;
         return dx*dx + dy*dy;
@@ -153,11 +151,10 @@
         return 0;
     }
 
-    // ★修正ポイント：適切なしきい値と、テキスト完全一致による二重読みブロック
     function isDifferentSecondCandidate(first, cand, frameW) {
         if (!first || !cand || !first.center || !cand.center) return false;
 
-        // 【追加】両方とも解読済みで、テキストが完全に同じなら問答無用で「同一のQR（二重読み）」とみなす
+        // 両方とも解読済みで、テキストが完全に同じなら問答無用で「同一のQR（二重読み）」とみなす
         if (cand.text && first.text && cand.text === first.text) {
             return false;
         }
@@ -165,8 +162,7 @@
         const d = getDistance(first.center, cand.center);
         const qrSize = estimateQrSize(cand) || estimateQrSize(first) || 0;
         
-        // 【修正】しきい値を「QRサイズの0.5倍」に変更。
-        // （隣接するQRコードの中心距離は必ず1.0倍以上離れているため、0.5倍以上で確実に別物と認識可能）
+        // しきい値を「QRサイズの0.5倍」に変更（隣接するQRコードは確実にこれ以上離れているため）
         const distanceThreshold = Math.max(frameW * 0.05, qrSize * 0.5);
 
         return d > distanceThreshold;
@@ -249,51 +245,42 @@
         appPassword = pw;
         appMask = deriveEncryptionMaskBytes(appPassword, 5000);
 
-        if (savedRawCandidates && savedRawCandidates.length > 0) {
-            let success = false;
-            secondQR = null;
+        let success = false;
+        secondQR = null;
 
+        // まず、一時停止した瞬間のフレームで復号を試みる
+        if (savedRawCandidates && savedRawCandidates.length > 0) {
             for (let i = 0; i < savedRawCandidates.length; i++) {
                 const candidateRaw = savedRawCandidates[i];
                 const pts = getPts(candidateRaw);
                 const center = getCenter(pts);
                 
-                // 第1QR自身のデータはパスワード復号の対象から外す
                 const candMock = { center: center, text: null }; 
-                if (!isDifferentSecondCandidate(firstQR, candMock, overlayCanvas.width)) {
-                    continue; 
-                }
+                if (!isDifferentSecondCandidate(firstQR, candMock, overlayCanvas.width)) continue; 
 
                 const decoded = jsQR.resumeDecode(candidateRaw, Array.from(appMask));
                 
                 if (decoded) {
-                    secondQR = { 
-                        text: decoded.text, 
-                        managementCode: decoded.managementCode, 
-                        points: pts, 
-                        center: center 
-                    };
+                    secondQR = { text: decoded.text, managementCode: decoded.managementCode, points: pts, center: center };
                     success = true;
                     break;
                 }
             }
-            
-            if (success) {
-                updateUI();
-                document.getElementById('passwordScreen').style.display = 'none';
-                showResultScreen();
-                return;
-            } else {
-                alert("復号に失敗しました。パスワードが間違っているか、第2のQRコードが正しく読み取れていません。");
-                appPassword = null;
-                appMask = null;
-            }
         }
         
-        document.getElementById('passwordScreen').style.display = 'none';
-        isScanning = true;
-        lastDetectTime = Date.now(); 
-        requestAnimationFrame(scanLoop);
+        if (success) {
+            updateUI();
+            document.getElementById('passwordScreen').style.display = 'none';
+            showResultScreen();
+        } else {
+            // ★重要変更箇所★
+            // ブレなどで一発復号に失敗しても、エラーを出してパスワードを破棄するのをやめました。
+            // パスワードを保持したままカメラを再開し、次の「綺麗なフレーム」が入った瞬間に自動復号させます。
+            document.getElementById('passwordScreen').style.display = 'none';
+            isScanning = true;
+            lastDetectTime = Date.now(); 
+            requestAnimationFrame(scanLoop);
+        }
     }
 
     async function scanLoop() {
@@ -340,19 +327,9 @@
                         const center = getCenter(pts);
 
                         if (decoded) {
-                            validDecodedItems.push({ 
-                                text: decoded.text, 
-                                managementCode: decoded.managementCode, 
-                                points: pts, 
-                                center: center 
-                            });
+                            validDecodedItems.push({ text: decoded.text, managementCode: decoded.managementCode, points: pts, center: center });
                         } else {
-                            rawUnrecognizedItems.push({
-                                text: null,
-                                points: pts,
-                                center: center,
-                                raw: raw
-                            });
+                            rawUnrecognizedItems.push({ text: null, points: pts, center: center, raw: raw });
                         }
                     }
                     savedRawCandidates = rawItems;
@@ -369,7 +346,6 @@
                     if (isDifferentSecondCandidate(firstQR, item, overlayCanvas.width)) {
                         secondQR = item;
                     } else {
-                        // 同一の第1QRとみなす：座標のみ更新してブレを軽減
                         firstQR.points = item.points;
                         firstQR.center = item.center;
                     }
@@ -382,11 +358,17 @@
                 const mgmtStr = firstQR.managementCode !== undefined ? 
                                 firstQR.managementCode.toString(2).padStart(16, '0') : "0000000000000000";
                 
-                // 第1QRが暗号化フラグ（管理部8bit目が1）を持っている場合
                 if (mgmtStr[7] === '1') {
                     let isRawSecondQRVisible = false;
+                    const size1 = estimateQrSize(firstQR);
 
                     for (const rawCand of rawUnrecognizedItems) {
+                        const size2 = estimateQrSize(rawCand);
+                        
+                        // ★重要変更箇所★
+                        // 極端に小さいノイズや大きすぎる誤検出を無視する（第1QRのサイズの30%〜300%の範囲のみ許可）
+                        if (size2 < size1 * 0.3 || size2 > size1 * 3.0) continue;
+
                         if (isDifferentSecondCandidate(firstQR, rawCand, overlayCanvas.width)) {
                             isRawSecondQRVisible = true;
                             break;
@@ -399,10 +381,6 @@
                         isProcessing = false;
                         return; 
                     }
-
-                    isProcessing = false;
-                    requestAnimationFrame(scanLoop);
-                    return;
                 }
             }
 
@@ -418,6 +396,7 @@
         requestAnimationFrame(scanLoop);
     }
 
+    // (UI更新やリザルト画面表示などの関数群は変更なし)
     function updateUI() {
         if (firstQR) {
             document.getElementById('text1').innerText = firstQR.text;
