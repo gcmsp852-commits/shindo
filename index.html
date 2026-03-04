@@ -99,6 +99,7 @@
     // --- SHA-256関数群 (変更なし) ---
 // --- SHA-256関数群 (変更なし) ---
 // --- SHA-256関数群 (変更なし) ---
+// --- SHA-256関数群 (変更なし) ---
     function sha256Bytes(msgBytes){
         const K = new Uint32Array([0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]);
         function rotr(x,n){ return (x>>>n) | (x<<(32-n)); } function ch(x,y,z){ return (x & y) ^ (~x & z); } function maj(x,y,z){ return (x & y) ^ (x & z) ^ (y & z); } function s0(x){ return rotr(x,7) ^ rotr(x,18) ^ (x>>>3); } function s1(x){ return rotr(x,17) ^ rotr(x,19) ^ (x>>>10); } function S0(x){ return rotr(x,2) ^ rotr(x,13) ^ rotr(x,22); } function S1(x){ return rotr(x,6) ^ rotr(x,11) ^ rotr(x,25); }
@@ -133,7 +134,7 @@
     let appMask = null;
     let savedRawCandidates = [];
 
-    // --- 距離判定・サイズ推定ロジック（強化版） ---
+    // --- 距離判定・サイズ推定ロジック（修正版） ---
     function dist2(a, b) {
         const dx = a.x - b.x, dy = a.y - b.y;
         return dx*dx + dy*dy;
@@ -152,22 +153,22 @@
         return 0;
     }
 
-    // ★強化ポイント：二重読みを絶対に防ぐためにしきい値を大幅アップ
+    // ★修正ポイント：適切なしきい値と、テキスト完全一致による二重読みブロック
     function isDifferentSecondCandidate(first, cand, frameW) {
         if (!first || !cand || !first.center || !cand.center) return false;
+
+        // 【追加】両方とも解読済みで、テキストが完全に同じなら問答無用で「同一のQR（二重読み）」とみなす
+        if (cand.text && first.text && cand.text === first.text) {
+            return false;
+        }
 
         const d = getDistance(first.center, cand.center);
         const qrSize = estimateQrSize(cand) || estimateQrSize(first) || 0;
         
-        // 【強化】距離のしきい値：画面幅の15% または QRコードサイズの1.2倍
-        const distanceThreshold = Math.max(frameW * 0.15, qrSize * 1.2);
+        // 【修正】しきい値を「QRサイズの0.5倍」に変更。
+        // （隣接するQRコードの中心距離は必ず1.0倍以上離れているため、0.5倍以上で確実に別物と認識可能）
+        const distanceThreshold = Math.max(frameW * 0.05, qrSize * 0.5);
 
-        // テキストが一致している場合は、物理的に「確実に」離れていない限り同一(ブレ)とみなす
-        if (cand.text && first.text && cand.text === first.text) {
-            return d > (distanceThreshold * 1.5);
-        }
-
-        // テキストが違う、または未解読(text=null)の場合は通常のしきい値
         return d > distanceThreshold;
     }
 
@@ -250,14 +251,14 @@
 
         if (savedRawCandidates && savedRawCandidates.length > 0) {
             let success = false;
-            secondQR = null; // 誤検出リセット
+            secondQR = null;
 
             for (let i = 0; i < savedRawCandidates.length; i++) {
                 const candidateRaw = savedRawCandidates[i];
                 const pts = getPts(candidateRaw);
                 const center = getCenter(pts);
                 
-                // ★第1QR自身を再解読してしまうのを防ぐ
+                // 第1QR自身のデータはパスワード復号の対象から外す
                 const candMock = { center: center, text: null }; 
                 if (!isDifferentSecondCandidate(firstQR, candMock, overlayCanvas.width)) {
                     continue; 
@@ -312,8 +313,8 @@
             isProcessing = true;
             lastDetectTime = now;
             
-            let validDecodedItems = [];    // 解読に成功したQR群
-            let rawUnrecognizedItems = []; // 解読できなかった生データ群（誤り訂正直前データなど）
+            let validDecodedItems = [];
+            let rawUnrecognizedItems = []; 
 
             try {
                 zxingCanvas.width = overlayCanvas.width;
@@ -347,7 +348,7 @@
                             });
                         } else {
                             rawUnrecognizedItems.push({
-                                text: null, // 未解読なので明示的にnull
+                                text: null,
                                 points: pts,
                                 center: center,
                                 raw: raw
@@ -385,7 +386,6 @@
                 if (mgmtStr[7] === '1') {
                     let isRawSecondQRVisible = false;
 
-                    // ★未解読の生データの中に、物理的に離れた第2QRが存在するか「のみ」を確認する
                     for (const rawCand of rawUnrecognizedItems) {
                         if (isDifferentSecondCandidate(firstQR, rawCand, overlayCanvas.width)) {
                             isRawSecondQRVisible = true;
@@ -394,13 +394,12 @@
                     }
 
                     if (isRawSecondQRVisible && document.getElementById('passwordScreen').style.display !== 'flex') {
-                        secondQR = null; // 誤検出を強制リセットしてパスワード入力を待つ
+                        secondQR = null; 
                         showPasswordScreen();
                         isProcessing = false;
                         return; 
                     }
 
-                    // 第2の未解読QRが見つかるまでは、勝手にリザルト画面に行かないようここで処理をストップ
                     isProcessing = false;
                     requestAnimationFrame(scanLoop);
                     return;
