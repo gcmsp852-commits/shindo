@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>QRツイン リーダー2</title>
+    <title>QRツイン リーダー</title>
     <meta name="apple-mobile-web-app-title" content="QRツイン">
     <meta name="application-name" content="QRツイン">
     <meta name="apple-mobile-web-app-capable" content="yes">
@@ -23,6 +23,7 @@
         
         #startScreen, #resultScreen { padding: 20px; margin-top: 50px; }
         #resultScreen { display: none; }
+
         .camera-container { position: relative; width: 100%; max-width: 600px; margin: 0 auto; background: #000; display: none; }
         video { width: 100%; display: block; object-fit: cover; }
         canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
@@ -32,7 +33,7 @@
         .qr-1 { border-left: 5px solid #00E676; }
         .qr-2 { border-left: 5px solid #29B6F6; }
         
-        button { width: 100%; max-width: 300px; padding: 15px; font-size: 1.1rem; font-weight: bold; background: #6200EE; color: white; border: none; border-radius: 8px; cursor: margin-top: 10px; }
+        button { width: 100%; max-width: 300px; padding: 15px; font-size: 1.1rem; font-weight: bold; background: #6200EE; color: white; border: none; border-radius: 8px; cursor: pointer; margin-top: 10px; }
         button:disabled { background: #555; cursor: not-allowed; color: #aaa; }
         
         #startBtn { background: #81C784; color: #121212; } 
@@ -55,7 +56,7 @@
         </div>
     </div>
 
-    <h2>📱 QRツイン リーダー</h2>
+    <h2>📱 QRツイン リーダー２</h2>
     
     <div id="startScreen">
         <p style="color: #aaa; font-size: 0.9rem; margin-bottom: 20px;">2つのQRコードを同時に、または連続して読み取ります。</p>
@@ -124,6 +125,7 @@
     // 【生データ追跡用変数】
     let trackedFirst = null;
     let trackedSecond = null;
+    let notFoundCount = 0; // ★追加：QRを見失った時間をカウント
 
     // 【解読完了用変数】
     let firstQR = null;
@@ -196,40 +198,60 @@
         return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
     }
 
-    // 生データが同一か判定する関数
+    // ★修正：フリーズしない、超高速な生データ同一判定
     function isSameRawData(rawA, rawB) {
         if (!rawA || !rawB) return false;
         try {
-            // jsQR内部の行列データを文字列化して比較
             if (rawA.matrix && rawB.matrix) {
-                return JSON.stringify(rawA.matrix.data) === JSON.stringify(rawB.matrix.data);
+                // 幅が違えば明らかに別物
+                if (rawA.matrix.width !== rawB.matrix.width) return false;
+                
+                const dA = rawA.matrix.data;
+                const dB = rawB.matrix.data;
+                if (!dA || !dB || dA.length !== dB.length) return false;
+                
+                // 数万件のデータを全て比較すると重いため、10箇所だけサンプリング比較する
+                const len = dA.length;
+                const step = Math.floor(len / 10) || 1;
+                for (let i = 0; i < len; i += step) {
+                    if (dA[i] !== dB[i]) return false;
+                }
+                return true;
             }
         } catch(e) {}
         return false;
     }
 
-    // ▼▼▼ 生データを使ったトラッキングロジック（書き換え版） ▼▼▼
+    // ▼▼▼ 生データを使ったトラッキングロジック（★修正版） ▼▼▼
     function processRawDetections(items) {
-        if (items.length === 0) return;
+        // ★修正：画面からQRコードが消えたら、少し待ってから枠をリセットする
+        if (items.length === 0) {
+            notFoundCount++;
+            if (notFoundCount > 3) { // 約0.5秒見失ったら消去
+                trackedFirst = null;
+                trackedSecond = null;
+            }
+            return;
+        }
+        notFoundCount = 0; // 見つかったらカウントをリセット
 
         if (items.length >= 2) {
-            if (!trackedFirst) {
+            if (!trackedFirst || !trackedSecond) {
                 trackedFirst = items[0];
                 trackedSecond = items[1];
-                return;
-            }
-            if (trackedFirst && !trackedSecond) {
-                const dist0 = getDistance(trackedFirst.center, items[0].center);
-                const dist1 = getDistance(trackedFirst.center, items[1].center);
-                if (dist0 > dist1) {
-                    trackedSecond = items[0];
-                    trackedFirst = items[1]; 
+            } else {
+                // ★修正：すでに2つの枠がある状態でカメラが動いた場合、近い方のデータを上書きして追従させる
+                const dist00 = getDistance(trackedFirst.center, items[0].center);
+                const dist01 = getDistance(trackedFirst.center, items[1].center);
+                if (dist00 < dist01) {
+                    trackedFirst.points = items[0].points; trackedFirst.center = items[0].center; trackedFirst.raw = items[0].raw;
+                    trackedSecond.points = items[1].points; trackedSecond.center = items[1].center; trackedSecond.raw = items[1].raw;
                 } else {
-                    trackedSecond = items[1];
-                    trackedFirst = items[0]; 
+                    trackedFirst.points = items[1].points; trackedFirst.center = items[1].center; trackedFirst.raw = items[1].raw;
+                    trackedSecond.points = items[0].points; trackedSecond.center = items[0].center; trackedSecond.raw = items[0].raw;
                 }
-                return;
             }
+            return;
         }
 
         if (items.length === 1) {
@@ -238,7 +260,6 @@
             if (!trackedFirst) {
                 trackedFirst = item;
             } else if (!trackedSecond) {
-                // 文字ではなく「生データ(raw)」が違うかどうかで判定
                 if (!isSameRawData(item.raw, trackedFirst.raw)) {
                     trackedSecond = item;
                 } else {
@@ -249,11 +270,19 @@
                     if (dist > distanceThreshold) {
                         trackedSecond = item;
                     } else {
-                        // 同一QRの場合は座標と生データを最新に更新する
                         trackedFirst.points = item.points;
                         trackedFirst.center = item.center;
                         trackedFirst.raw = item.raw; 
                     }
+                }
+            } else {
+                // ★修正：すでに2つの枠があるが、カメラから1つ見切れてしまった場合、近い方の枠だけ追従させる
+                const dist1 = getDistance(trackedFirst.center, item.center);
+                const dist2 = getDistance(trackedSecond.center, item.center);
+                if (dist1 < dist2) {
+                    trackedFirst.points = item.points; trackedFirst.center = item.center; trackedFirst.raw = item.raw;
+                } else {
+                    trackedSecond.points = item.points; trackedSecond.center = item.center; trackedSecond.raw = item.raw;
                 }
             }
         }
@@ -301,6 +330,9 @@
 
                     // ④ 生データによるトラッキングの実行
                     processRawDetections(detectionItems);
+                } else {
+                    // QRが見つからなかった場合もカウントを進めるために空配列を渡す
+                    processRawDetections([]);
                 }
 
                 // ⑤ 画面内に2つの独立したQR生データが確定した場合のみ、デコードに進む
@@ -466,7 +498,7 @@
 
     function goBack() {
         // トラッキング用変数もすべてリセット
-        trackedFirst = null; trackedSecond = null;
+        trackedFirst = null; trackedSecond = null; notFoundCount = 0;
         firstQR = null; secondQR = null; appPassword = null; appMask = null;
         savedRawCandidates = [];
         
