@@ -209,27 +209,94 @@
     }
 
     async function startCamera() {
+    // カメラは HTTPS または localhost の安全なコンテキストでのみ動作します
+    const isLocalhost = (location.hostname === 'localhost' || location.hostname === '127.0.0.1');
+    if (!window.isSecureContext && !isLocalhost) {
+        alert("カメラはHTTPS（またはlocalhost）でのみ起動できます。
+現在のURLをHTTPSで開いてください。");
+        return false;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        alert("このブラウザは getUserMedia をサポートしていません。");
+        return false;
+    }
+
+    // 既存ストリームがあれば停止
+    try {
+        const old = video.srcObject;
+        if (old && old.getTracks) old.getTracks().forEach(t => t.stop());
+    } catch (_) {}
+
+    // iOS対策（属性を明示）
+    try {
+        video.setAttribute('playsinline', '');
+        video.setAttribute('webkit-playsinline', '');
+        video.muted = true;
+        video.autoplay = true;
+    } catch (_) {}
+
+    const tryGet = async (constraints) => {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: constraints, audio: false });
+        video.srcObject = stream;
+
+        // loadedmetadata を待つ（iOS/Androidの差異吸収）
+        await new Promise((resolve) => {
+            const done = () => {
+                video.removeEventListener('loadedmetadata', done);
+                resolve();
+            };
+            video.addEventListener('loadedmetadata', done, { once: true });
+            // 念のためタイムアウトも用意
+            setTimeout(resolve, 1200);
+        });
+
+        // play() はユーザー操作に紐づいていれば成功しやすい
+        await video.play();
+
+        // videoWidth が 0 の端末があるので少し待つ
+        const t0 = performance.now();
+        while ((!video.videoWidth || !video.videoHeight) && (performance.now() - t0 < 1500)) {
+            await new Promise(r => setTimeout(r, 50));
+        }
+
+        isScanning = true;
+        requestAnimationFrame(scanLoop);
+        return true;
+    };
+
+    // まずは背面カメラ優先
+    try {
+        return await tryGet({
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 }
+        });
+    } catch (err1) {
+        console.warn("背面カメラ指定で失敗:", err1);
+
+        // Overconstrained / NotFound などは緩い指定で再試行
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
-            });
-            video.srcObject = stream;
+            return await tryGet(true);
+        } catch (err2) {
+            console.error("カメラ起動失敗:", err2);
 
-            await new Promise((resolve) => {
-                video.onloadedmetadata = resolve;
-                setTimeout(resolve, 500);
-            });
-
-            await video.play().catch(e => console.warn("自動再生ブロック:", e));
-
-            isScanning = true;
-            requestAnimationFrame(scanLoop);
-            return true;
-        } catch (err) {
+            // 権限系のメッセージを分かりやすく
+            let msg = err2 && err2.name ? err2.name : "UnknownError";
+            if (msg === 'NotAllowedError' || msg === 'SecurityError') {
+                msg = "カメラ権限が拒否されています。ブラウザ設定でカメラを許可してください。";
+            } else if (msg === 'NotFoundError' || msg === 'DevicesNotFoundError') {
+                msg = "カメラデバイスが見つかりません。";
+            } else if (msg === 'NotReadableError' || msg === 'TrackStartError') {
+                msg = "他アプリがカメラを使用中の可能性があります。";
+            } else {
+                msg = (err2 && err2.message) ? err2.message : String(err2);
+            }
             alert("カメラを起動できませんでした。
-エラー: " + err.message);
+" + msg);
             return false;
         }
+    }
+}
     }
 
     // --- UI ---
